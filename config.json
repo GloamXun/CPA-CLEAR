@@ -1,0 +1,15 @@
+{
+  "base_url": "https://your-api.example.com/",
+  "token": "your-token",
+  "input_dir": "./auth_files",
+  "output_dir": "./output_dir",
+  "target_type": "codex",
+  "provider": "",
+  "timeout": 15,
+  "retries": 3,
+  "workers": 30,
+  "recursive": false,
+  "quota_disable_threshold": 0.0,
+  "move_mode": "401",
+  "debug": true
+}
