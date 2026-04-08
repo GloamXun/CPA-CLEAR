@@ -101,7 +101,6 @@ https://your-sub2api-host/api/v1/admin/accounts?page=1&page_size=100&platform=&t
 Authorization: Bearer <token>
 ```
 登录 sub2api 的管理员账号后，打开 `F12` 点击账号管理，在 `Network` 选项卡中寻找 `Request URL` 为 `active?timezone=Asia%2FShanghai` 的请求，复制其对应的 `Request Headers` 中 `Authorization` 的所有内容到 `config.json` 中。
-
 脚本同时支持两种 token 写法：
 
 - 直接写原始 token
@@ -126,7 +125,7 @@ python transform.py --skip-remote-dedupe
 ```bash
 python transform.py ^
   --input ./auth-dir ^
-  --sub2api-base-url https://api.612786.xyz ^
+  --sub2api-base-url https://your-sub2api-api.example.com/ ^
   --sub2api-token "Bearer your-token"
 ```
 

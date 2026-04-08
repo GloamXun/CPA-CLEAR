@@ -485,7 +485,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--name-prefix", help=f"Name prefix when --name-source=index (default: {DEFAULT_NAME_PREFIX})")
     parser.add_argument("--timeout", type=int, help=f"HTTP timeout in seconds (default: {DEFAULT_TIMEOUT})")
-    parser.add_argument("--sub2api-base-url", help="sub2api root URL, for example: https://api.612786.xyz")
+    parser.add_argument("--sub2api-base-url", help="sub2api root URL")
     parser.add_argument("--sub2api-accounts-url", help="sub2api accounts API URL override")
     parser.add_argument("--sub2api-token", help="sub2api Bearer token or raw token")
     parser.add_argument("--sub2api-timezone", help=f"Timezone query parameter (default: {DEFAULT_TIMEZONE})")
