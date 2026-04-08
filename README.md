@@ -1,53 +1,57 @@
 # CPA-CLEAR
 
-一个用于批量检测 [CPA](https://github.com/router-for-me/CLIProxyAPI) 账号状态并整理本地认证文件的 Python 脚本。
+一个用于批量整理 CPA 账号文件的小工具集。
 
-脚本会先从远端 CPA 管理接口拉取账号列表，再逐个探测账号的使用状态，识别出：
+当前项目包含两个核心脚本：
 
-- `401` / 不可用账号
-- 配额已用尽或低于阈值的账号
-
-识别完成后，会把对应的本地 JSON 文件移动到输出目录，并导出结果清单。
-
-## 适用场景
-
-当你本地有一批认证文件，需要配合远端管理接口快速筛出失效账号或 quota 异常账号时，可以用这个脚本做一次批量清洗。
+- `delete.py`：从 CPA 管理接口拉取账号状态，识别 `401` / quota 异常账号，并移动本地对应文件
+- `transform.py`：把本地邮箱 `json` 转成 sub2api 可导入格式，并先和 sub2api 现有账号按邮箱去重
 
 ## 项目结构
 
 ```text
 .
-├─ delete.py      # 主脚本
-└─ config.json    # 配置文件
+├─ delete.py
+├─ transform.py
+├─ config.json
+└─ LICENSE
 ```
 
 ## 运行要求
 
 - Python 3.10+
 - 可访问的 CPA 管理接口
-- 有效的接口 `token`
-- 本地CPA账号目录，例如 `auth-dir/`
+- 可访问的 sub2api 管理接口
+- 有效的接口 token
 
-## 快速开始
+## delete.py
 
-1. 修改根目录下的 `config.json`
-2. 配置CPA `auth-dir` 目录至 `input_dir`
-3. 运行脚本
+`delete.py` 用于筛出 CPA 中已经失效或配额异常的账号，并把本地对应认证文件移动到输出目录。
+
+### 功能
+
+- 拉取 CPA `auth-files`
+- 按 `target_type` / `provider` 过滤账号
+- 探测账号状态
+- 识别 `401` / 不可用账号
+- 识别 quota 已用尽或低于阈值的账号
+- 导出结果 JSON
+- 按文件名匹配并移动本地账号文件
+
+### 运行
 
 ```bash
 python delete.py
 ```
 
-## 配置说明
+### delete.py 配置示例
 
-默认读取项目根目录下的 `config.json`。
-
-示例：
+默认读取根目录 `config.json` 顶层字段。
 
 ```json
 {
-  "base_url": "https://your-api.example.com/",
-  "token": "your-token",
+  "base_url": "https://your-cpa-api.example.com/",
+  "token": "your-cpa-token",
   "input_dir": "./auth-dir",
   "output_dir": "./output_dir",
   "target_type": "codex",
@@ -62,62 +66,161 @@ python delete.py
 }
 ```
 
-常用字段：
+### delete.py 输出
 
-- `base_url`：CPA 管理接口地址
-- `token`：接口鉴权 token
-- `input_dir`：本地待处理账号文件目录
-- `output_dir`：输出目录，结果文件和移动后的账号文件都会放这里
-- `target_type`：远端账号类型过滤，默认是 `codex`
-- `provider`：服务商过滤，为空表示不过滤
-- `timeout`：单次请求超时时间，单位秒
-- `retries`：请求失败后的重试次数
-- `workers`：并发探测线程数
-- `recursive`：是否递归扫描 `input_dir` 下的子目录
-- `quota_disable_threshold`：quota 剩余比例阈值，`0.0` 表示只按接口明确返回的限额状态判断
-- `move_mode`：移动模式，可选 `all`、`401`、`quota`
-- `debug`：调试模式，开启后会输出 `401` 邮箱列表，并跳过 `401` 文件移动
+- `401_accounts.json`
+- `quota_accounts.json`
+- `move_results.json`
+- `401_emails.txt`：仅在 `debug=true` 时生成
 
-## 处理逻辑
+## transform.py
 
-脚本大致流程如下：
+`transform.py` 用于把本地账号文件转换成 sub2api 导入 JSON，并在导入前自动与 sub2api 现有账号按邮箱去重。
 
-1. 从远端接口拉取账号列表
-2. 根据 `target_type` 和 `provider` 过滤目标账号
-3. 调用接口探测账号状态
-4. 识别 `401` 账号与 quota 异常账号
-5. 导出结果 JSON
-6. 按文件名把本地对应账号文件移动到 `output_dir`
+### transform.py 现在的处理流程
 
-本地文件匹配时会优先按以下方式查找：
+1. 扫描本地目录下的邮箱 `json` 文件
+2. 分页请求 sub2api 账号管理接口 `/api/v1/admin/accounts`
+3. 提取 sub2api 中已有账号邮箱
+4. 用本地文件邮箱与远端邮箱做去重
+5. 仅保留 sub2api 中不存在的账号
+6. 生成 sub2api 导入包
+7. 额外导出去重报告，方便核对哪些账号被跳过
 
-- 完整文件名匹配
-- `name + ".json"` 匹配
-- 文件名 stem 匹配
+### transform.py 适配的 sub2api 接口
 
-## 输出结果
+默认按下面这类接口自动翻页请求：
 
-运行后通常会在 `output_dir` 下看到这些文件：
+```text
+https://your-sub2api-host/api/v1/admin/accounts?page=1&page_size=100&platform=&type=&status=&privacy_mode=&group=&search=&lite=1&timezone=Asia%2FShanghai
+```
 
-- `401_accounts.json`：识别出的 `401` / 不可用账号
-- `quota_accounts.json`：识别出的 quota 异常账号
-- `move_results.json`：文件移动结果
+请求头使用：
 
-当 `debug=true` 时，还会额外输出：
+```text
+Authorization: Bearer <token>
+```
+登录 sub2api 的管理员账号后，打开 `F12` 点击账号管理，在 `Network` 选项卡中寻找 `Request URL` 为 `active?timezone=Asia%2FShanghai` 的请求，复制其对应的 `Request Headers` 中 `Authorization` 的所有内容到 `config.json` 中。
 
-- `401_emails.txt`：`401` 账号邮箱列表
+脚本同时支持两种 token 写法：
+
+- 直接写原始 token
+- 直接写完整的 `Bearer xxx`
+
+### transform.py 运行
+
+最简单的方式：
+
+```bash
+python transform.py
+```
+
+如果你只想离线生成导入包，不访问 sub2api：
+
+```bash
+python transform.py --skip-remote-dedupe
+```
+
+也可以临时通过命令行覆盖配置：
+
+```bash
+python transform.py ^
+  --input ./auth-dir ^
+  --sub2api-base-url https://api.612786.xyz ^
+  --sub2api-token "Bearer your-token"
+```
+
+### transform 配置示例
+
+`transform.py` 默认也读取根目录 `config.json`，并优先读取其中的 `transform` 配置段。
+
+```json
+{
+  "base_url": "https://your-cpa-api.example.com/",
+  "token": "your-cpa-token",
+  "input_dir": "./auth-dir",
+  "output_dir": "./output_dir",
+  "target_type": "codex",
+  "provider": "",
+  "timeout": 15,
+  "retries": 3,
+  "workers": 30,
+  "recursive": false,
+  "quota_disable_threshold": 0.0,
+  "move_mode": "401",
+  "debug": false,
+  "transform": {
+    "input_dir": "./auth-dir",
+    "output_file": "./sub2api_accounts_import.json",
+    "report_file": "./sub2api_dedupe_report.json",
+    "include_pattern": "*@*.json",
+    "exclude_patterns": [
+      "merged*.json",
+      "import_payload*.json",
+      "sub2api_accounts_import*.json",
+      "sub2api_dedupe_report*.json"
+    ],
+    "recursive": false,
+    "platform": "openai",
+    "account_type": "oauth",
+    "concurrency": 3,
+    "priority": 50,
+    "name_source": "email",
+    "name_prefix": "acc",
+    "timeout": 15,
+    "base_url": "https://your-sub2api-api.example.com/",
+    "token": "Bearer ...",
+    "timezone": "Asia/Shanghai",
+    "page_size": 100,
+    "platform_filter": "",
+    "type_filter": "",
+    "status_filter": "",
+    "privacy_mode_filter": "",
+    "group_filter": "",
+    "search_filter": "",
+    "lite": true
+  }
+}
+```
+
+### transform.py 输出
+
+- `sub2api_accounts_import.json`：只包含需要新增导入的账号
+- `sub2api_dedupe_report.json`：包含统计信息和跳过原因
+
+报告里会区分：
+
+- 已存在于 sub2api 的邮箱
+- 本地重复邮箱
+- 无法识别邮箱的记录
+
+## 推荐工作流
+
+如果你是日常维护自己的 sub2api 和 CPA，可以按这个顺序：
+
+1. 确认 CPA 认证文件存放目录，本地登录 sub2api 管理员账号获取token，并更新 `config.json`
+2. 运行 `python delete.py`，清理 `401` 或 quota 异常账号文件
+3. 先运行 `python transform.py`
+4. 打开 `sub2api_dedupe_report.json`，确认哪些邮箱已存在、哪些会新增
+5. 将 `sub2api_accounts_import.json` 导入 sub2api
+
+
+这样你的流程会比较稳定：
+
+- `transform.py` 负责“导入前去重”
+- `delete.py` 负责“失效账号清理”
 
 ## 注意事项
 
-- `debug=true` 时，脚本会跳过 `401` 文件的实际移动，只导出结果和邮箱列表。
-- `move_mode=401` 只移动 `401` 账号文件。
-- `move_mode=quota` 只移动 quota 异常账号文件。
-- `move_mode=all` 会同时处理两类账号。
-- 如果本地文件名和远端返回的账号名对不上，移动阶段会提示 `local file not found in input_dir`。
+- `transform.py` 默认按邮箱去重，本地文件名是邮箱时效果最好
+- 如果本地 JSON 自身没有 `email` 字段，脚本会尝试回退使用文件名 stem 作为邮箱
+- 如果没有配置 sub2api URL，`transform.py` 会自动退化为离线模式
+- `delete.py` 在 `debug=true` 时会跳过 `401` 文件的实际移动，只输出结果
 
 ## 致谢
 
-本项目在处理思路和 CPA 管理流程上参考项目 [fantasticjoe/cpa-warden](https://github.com/fantasticjoe/cpa-warden)。
+本项目在处理思路和 CPA 管理流程上参考了项目 [fantasticjoe/cpa-warden](https://github.com/fantasticjoe/cpa-warden)。
 
 ## License
+
 [MIT](./LICENSE)
