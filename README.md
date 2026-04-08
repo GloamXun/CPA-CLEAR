@@ -119,3 +119,5 @@ python delete.py
 
 本项目在处理思路和 CPA 管理流程上参考项目 [fantasticjoe/cpa-warden](https://github.com/fantasticjoe/cpa-warden)。
 
+## License
+[MIT](./LICENSE)
