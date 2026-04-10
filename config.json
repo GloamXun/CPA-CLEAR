@@ -32,15 +32,6 @@
     "name_prefix": "acc",
     "timeout": 15,
     "base_url": "https://your-sub2api-api.example.com/",
-    "token": "Bearer ...",
-    "timezone": "Asia/Shanghai",
-    "page_size": 100,
-    "platform_filter": "",
-    "type_filter": "",
-    "status_filter": "",
-    "privacy_mode_filter": "",
-    "group_filter": "",
-    "search_filter": "",
-    "lite": true
+    "x_api_key": "your-sub2api-x-api-key"
   }
 }

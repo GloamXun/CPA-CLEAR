@@ -2,10 +2,11 @@
 
 一个用于批量整理 CPA 账号文件的小工具集。
 
-当前项目包含两个核心脚本：
+当前项目包含三个核心脚本：
 
 - `delete.py`：从 CPA 管理接口拉取账号状态，识别 `401` / quota 异常账号，并移动本地对应文件
 - `transform.py`：把本地邮箱 `json` 转成 sub2api 可导入格式，并先和 sub2api 现有账号按邮箱去重
+- `sub2api_detect.py`：直接拉取 sub2api 中的账号，用账号内的 `access_token` 检测 `401`
 
 ## 项目结构
 
@@ -13,6 +14,7 @@
 .
 ├─ delete.py
 ├─ transform.py
+├─ sub2api_detect.py
 ├─ config.json
 └─ LICENSE
 ```
@@ -80,7 +82,7 @@ python delete.py
 ### transform.py 现在的处理流程
 
 1. 扫描本地目录下的邮箱 `json` 文件
-2. 分页请求 sub2api 账号管理接口 `/api/v1/admin/accounts`
+2. 自动轮询 sub2api 账号管理接口 `/api/v1/admin/accounts/` 的所有分页
 3. 提取 sub2api 中已有账号邮箱
 4. 用本地文件邮箱与远端邮箱做去重
 5. 仅保留 sub2api 中不存在的账号
@@ -89,22 +91,18 @@ python delete.py
 
 ### transform.py 适配的 sub2api 接口
 
-默认按下面这类接口自动翻页请求：
+默认会按类似下面的方式自动翻页请求：
 
 ```text
-https://your-sub2api-host/api/v1/admin/accounts?page=1&page_size=100&platform=&type=&status=&privacy_mode=&group=&search=&lite=1&timezone=Asia%2FShanghai
+https://your-sub2api-host/api/v1/admin/accounts/?page=1&page_size=100
 ```
 
 请求头使用：
 
 ```text
-Authorization: Bearer <token>
+x-api-key: <your-x-api-key>
 ```
-登录 sub2api 的管理员账号后，打开 `F12` 点击账号管理，在 `Network` 选项卡中寻找 `Request URL` 为 `active?timezone=Asia%2FShanghai` 的请求，复制其对应的 `Request Headers` 中 `Authorization` 的所有内容到 `config.json` 中。
-脚本同时支持两种 token 写法：
-
-- 直接写原始 token
-- 直接写完整的 `Bearer xxx`
+登录 sub2api 的管理员账号后，打开 `F12` 进入 `Network`，找到 `Request URL` 为 `/api/v1/admin/accounts/` 的请求，复制其 `Request Headers` 中的 `x-api-key` 到 `config.json`。
 
 ### transform.py 运行
 
@@ -126,7 +124,7 @@ python transform.py --skip-remote-dedupe
 python transform.py ^
   --input ./auth-dir ^
   --sub2api-base-url https://your-sub2api-api.example.com/ ^
-  --sub2api-token "Bearer your-token"
+  --sub2api-x-api-key "your-x-api-key"
 ```
 
 ### transform 配置示例
@@ -168,16 +166,7 @@ python transform.py ^
     "name_prefix": "acc",
     "timeout": 15,
     "base_url": "https://your-sub2api-api.example.com/",
-    "token": "Bearer ...",
-    "timezone": "Asia/Shanghai",
-    "page_size": 100,
-    "platform_filter": "",
-    "type_filter": "",
-    "status_filter": "",
-    "privacy_mode_filter": "",
-    "group_filter": "",
-    "search_filter": "",
-    "lite": true
+    "x_api_key": "your-sub2api-x-api-key"
   }
 }
 ```
@@ -197,7 +186,7 @@ python transform.py ^
 
 如果你是日常维护自己的 sub2api 和 CPA，可以按这个顺序：
 
-1. 确认 CPA 认证文件存放目录，本地登录 sub2api 管理员账号获取token，并更新 `config.json`
+1. 确认 CPA 认证文件存放目录，本地登录 sub2api 管理员账号获取 `x-api-key`，并更新 `config.json`
 2. 运行 `python delete.py`，清理 `401` 或 quota 异常账号文件
 3. 先运行 `python transform.py`
 4. 打开 `sub2api_dedupe_report.json`，确认哪些邮箱已存在、哪些会新增
@@ -209,12 +198,43 @@ python transform.py ^
 - `transform.py` 负责“导入前去重”
 - `delete.py` 负责“失效账号清理”
 
+## sub2api_detect.py
+
+`sub2api_detect.py` 会先从 sub2api 拉取所有分页中的账号信息，再对每个账号调用 `/api/v1/admin/accounts/{id}/test`，并根据 `test` 接口返回结果输出所有 `401` 账号。
+
+### 运行
+
+```bash
+python sub2api_detect.py
+```
+
+### 输出
+
+- `sub2api_detect_output/probe_records.json`：所有探测结果
+- `sub2api_detect_output/401_accounts.json`：检测出的 `401` 账号
+- `sub2api_detect_output/401_emails.txt`：检测出的 `401` 邮箱列表
+
+### 配置
+
+`sub2api_detect.py` 不需要单独维护一份 sub2api 连接配置，直接复用 `transform` 里的：
+
+- `transform.base_url`
+- `transform.x_api_key`
+
+并发、超时、重试等检测参数则继续复用根级配置，例如：
+
+- `timeout`
+- `retries`
+- `workers`
+- `debug`
+
 ## 注意事项
 
 - `transform.py` 默认按邮箱去重，本地文件名是邮箱时效果最好
 - 如果本地 JSON 自身没有 `email` 字段，脚本会尝试回退使用文件名 stem 作为邮箱
 - 如果没有配置 sub2api URL，`transform.py` 会自动退化为离线模式
 - `delete.py` 在 `debug=true` 时会跳过 `401` 文件的实际移动，只输出结果
+- `sub2api_detect.py` 现在以 sub2api 自己的 `test` 接口结果为准
 
 ## 致谢
 

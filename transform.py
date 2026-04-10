@@ -10,7 +10,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 
 DEFAULT_CONFIG = "config.json"
@@ -18,7 +18,6 @@ DEFAULT_INPUT_DIR = "./auth-dir"
 DEFAULT_OUTPUT_FILE = "sub2api_accounts_import.json"
 DEFAULT_REPORT_FILE = "sub2api_dedupe_report.json"
 DEFAULT_INCLUDE_PATTERN = "*@*.json"
-DEFAULT_PAGE_SIZE = 100
 DEFAULT_TIMEOUT = 15
 DEFAULT_PLATFORM = "openai"
 DEFAULT_ACCOUNT_TYPE = "oauth"
@@ -26,8 +25,8 @@ DEFAULT_CONCURRENCY = 3
 DEFAULT_PRIORITY = 50
 DEFAULT_NAME_SOURCE = "email"
 DEFAULT_NAME_PREFIX = "acc"
-DEFAULT_TIMEZONE = "Asia/Shanghai"
-DEFAULT_ACCOUNTS_PATH = "/api/v1/admin/accounts"
+DEFAULT_ACCOUNTS_PATH = "/api/v1/admin/accounts/"
+DEFAULT_SUB2API_PAGE_SIZE = 100
 
 LOGGER = logging.getLogger("transform")
 
@@ -92,16 +91,12 @@ def compact_text(text: Any, limit: int = 240) -> str | None:
     return text if len(text) <= limit else text[: max(0, limit - 3)] + "..."
 
 
-def normalize_authorization(value: str) -> str:
-    token = str(value or "").strip()
-    if not token:
-        return ""
-    return token if token.lower().startswith("bearer ") else f"Bearer {token}"
-
-
-def http_headers(token: str) -> dict[str, str]:
+def sub2api_headers(x_api_key: str) -> dict[str, str]:
+    key = str(x_api_key or "").strip()
+    if not key:
+        raise RuntimeError("missing sub2api x-api-key")
     return {
-        "Authorization": normalize_authorization(token),
+        "x-api-key": key,
         "Accept": "application/json, text/plain, */*",
     }
 
@@ -301,27 +296,22 @@ def build_accounts_url(settings: dict[str, Any], page: int) -> str:
         if not root:
             raise RuntimeError("missing sub2api base URL")
         base_url = root + DEFAULT_ACCOUNTS_PATH
-    params = {
-        "page": page,
-        "page_size": settings["sub2api_page_size"],
-        "platform": settings["sub2api_platform_filter"],
-        "type": settings["sub2api_type_filter"],
-        "status": settings["sub2api_status_filter"],
-        "privacy_mode": settings["sub2api_privacy_mode_filter"],
-        "group": settings["sub2api_group_filter"],
-        "search": settings["sub2api_search_filter"],
-        "lite": 1 if settings["sub2api_lite"] else 0,
-        "timezone": settings["sub2api_timezone"],
-    }
-    return f"{base_url}?{urlencode(params)}"
+    parsed = urlsplit(base_url)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query["page"] = str(page)
+    query["page_size"] = str(DEFAULT_SUB2API_PAGE_SIZE)
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment))
 
 
 def fetch_sub2api_accounts(settings: dict[str, Any]) -> list[dict[str, Any]]:
+    all_accounts: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
     page = 1
-    accounts: list[dict[str, Any]] = []
+    total_pages: int | None = None
+
     while True:
         url = build_accounts_url(settings, page)
-        status, text = request_text(url, headers=http_headers(settings["sub2api_token"]), timeout=settings["timeout"])
+        status, text = request_text(url, headers=sub2api_headers(settings["sub2api_x_api_key"]), timeout=settings["timeout"])
         if status >= 400:
             raise RuntimeError(f"sub2api accounts request failed: http {status} | {compact_text(text, 300) or '-'}")
 
@@ -329,24 +319,28 @@ def fetch_sub2api_accounts(settings: dict[str, Any]) -> list[dict[str, Any]]:
         if not isinstance(payload, (dict, list)):
             raise RuntimeError("sub2api accounts response is not valid JSON")
 
-        page_items = find_account_list(payload) or []
-        if page == 1:
-            LOGGER.info("fetched sub2api page %s: %s accounts", page, len(page_items))
-        else:
-            LOGGER.info("fetched sub2api page %s: %s accounts (running total: %s)", page, len(page_items), len(accounts) + len(page_items))
+        page_accounts = find_account_list(payload) or []
+        for item in page_accounts:
+            account_key = str(item.get("id") or item.get("name") or len(all_accounts)).strip()
+            if account_key in seen_ids:
+                continue
+            seen_ids.add(account_key)
+            all_accounts.append(item)
 
-        if not page_items:
+        if total_pages is None:
+            total_pages = find_pagination_value(payload, ("pages", "page_count", "total_pages", "last_page"))
+        LOGGER.info("fetched sub2api accounts page %s/%s: %s", page, total_pages or "?", len(page_accounts))
+
+        if not page_accounts:
             break
-
-        accounts.extend(page_items)
-
-        total_pages = find_pagination_value(payload, ("page_count", "pages", "total_pages", "last_page"))
         if total_pages is not None and page >= total_pages:
             break
-        if len(page_items) < settings["sub2api_page_size"]:
+        if total_pages is None and len(page_accounts) < DEFAULT_SUB2API_PAGE_SIZE:
             break
         page += 1
-    return accounts
+
+    LOGGER.info("fetched sub2api accounts total: %s", len(all_accounts))
+    return all_accounts
 
 
 def fetch_existing_remote_emails(settings: dict[str, Any]) -> tuple[list[dict[str, Any]], set[str]]:
@@ -425,15 +419,7 @@ def build_report(
             "name_source": settings["name_source"],
             "sub2api_base_url": settings.get("sub2api_base_url"),
             "sub2api_accounts_url": settings.get("sub2api_accounts_url"),
-            "sub2api_page_size": settings["sub2api_page_size"],
-            "sub2api_timezone": settings["sub2api_timezone"],
-            "sub2api_platform_filter": settings["sub2api_platform_filter"],
-            "sub2api_type_filter": settings["sub2api_type_filter"],
-            "sub2api_status_filter": settings["sub2api_status_filter"],
-            "sub2api_privacy_mode_filter": settings["sub2api_privacy_mode_filter"],
-            "sub2api_group_filter": settings["sub2api_group_filter"],
-            "sub2api_search_filter": settings["sub2api_search_filter"],
-            "sub2api_lite": settings["sub2api_lite"],
+            "sub2api_auth_mode": "x-api-key",
             "skip_remote_dedupe": settings["skip_remote_dedupe"],
         },
         "prepared_accounts": prepared_rows,
@@ -487,16 +473,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout", type=int, help=f"HTTP timeout in seconds (default: {DEFAULT_TIMEOUT})")
     parser.add_argument("--sub2api-base-url", help="sub2api root URL")
     parser.add_argument("--sub2api-accounts-url", help="sub2api accounts API URL override")
-    parser.add_argument("--sub2api-token", help="sub2api Bearer token or raw token")
-    parser.add_argument("--sub2api-timezone", help=f"Timezone query parameter (default: {DEFAULT_TIMEZONE})")
-    parser.add_argument("--sub2api-page-size", type=int, help=f"Accounts page size (default: {DEFAULT_PAGE_SIZE})")
-    parser.add_argument("--sub2api-platform-filter", help="Accounts API platform filter")
-    parser.add_argument("--sub2api-type-filter", help="Accounts API type filter")
-    parser.add_argument("--sub2api-status-filter", help="Accounts API status filter")
-    parser.add_argument("--sub2api-privacy-mode-filter", help="Accounts API privacy_mode filter")
-    parser.add_argument("--sub2api-group-filter", help="Accounts API group filter")
-    parser.add_argument("--sub2api-search-filter", help="Accounts API search filter")
-    parser.add_argument("--sub2api-lite", action=argparse.BooleanOptionalAction, default=None, help="Accounts API lite query flag")
+    parser.add_argument("--sub2api-x-api-key", help="sub2api x-api-key")
     parser.add_argument("--skip-remote-dedupe", action="store_true", help="Do not call sub2api; build payload from local files only")
     parser.add_argument("--debug", action=argparse.BooleanOptionalAction, default=None, help="Enable debug logging")
     return parser
@@ -531,16 +508,7 @@ def build_settings(args: argparse.Namespace, root_conf: dict[str, Any]) -> dict[
         "timeout": int(args.timeout if args.timeout is not None else conf_get(section, "timeout", default=DEFAULT_TIMEOUT)),
         "sub2api_base_url": str(args.sub2api_base_url or conf_get(section, "sub2api_base_url", "base_url", default="")).strip(),
         "sub2api_accounts_url": str(args.sub2api_accounts_url or conf_get(section, "sub2api_accounts_url", "accounts_url", default="")).strip(),
-        "sub2api_token": str(args.sub2api_token or conf_get(section, "sub2api_token", "token", default="")).strip(),
-        "sub2api_timezone": str(args.sub2api_timezone or conf_get(section, "sub2api_timezone", "timezone", default=DEFAULT_TIMEZONE)).strip(),
-        "sub2api_page_size": int(args.sub2api_page_size if args.sub2api_page_size is not None else conf_get(section, "sub2api_page_size", "page_size", default=DEFAULT_PAGE_SIZE)),
-        "sub2api_platform_filter": str(args.sub2api_platform_filter or conf_get(section, "sub2api_platform_filter", "platform_filter", default="")).strip(),
-        "sub2api_type_filter": str(args.sub2api_type_filter or conf_get(section, "sub2api_type_filter", "type_filter", default="")).strip(),
-        "sub2api_status_filter": str(args.sub2api_status_filter or conf_get(section, "sub2api_status_filter", "status_filter", default="")).strip(),
-        "sub2api_privacy_mode_filter": str(args.sub2api_privacy_mode_filter or conf_get(section, "sub2api_privacy_mode_filter", "privacy_mode_filter", default="")).strip(),
-        "sub2api_group_filter": str(args.sub2api_group_filter or conf_get(section, "sub2api_group_filter", "group_filter", default="")).strip(),
-        "sub2api_search_filter": str(args.sub2api_search_filter or conf_get(section, "sub2api_search_filter", "search_filter", default="")).strip(),
-        "sub2api_lite": bool(args.sub2api_lite) if args.sub2api_lite is not None else parse_bool(conf_get(section, "sub2api_lite", "lite", default=True), default=True),
+        "sub2api_x_api_key": str(args.sub2api_x_api_key or conf_get(section, "sub2api_x_api_key", "x_api_key", "api_key", default="")).strip(),
         "skip_remote_dedupe": bool(args.skip_remote_dedupe or parse_bool(conf_get(section, "skip_remote_dedupe", default=False), default=False)),
         "debug": bool(args.debug) if args.debug is not None else parse_bool(conf_get(section, "debug", default=False)),
     }
@@ -553,16 +521,14 @@ def build_settings(args: argparse.Namespace, root_conf: dict[str, Any]) -> dict[
         raise RuntimeError("priority must be >= 0")
     if settings["timeout"] < 1:
         raise RuntimeError("timeout must be >= 1")
-    if settings["sub2api_page_size"] < 1:
-        raise RuntimeError("sub2api_page_size must be >= 1")
     if settings["name_source"] not in {"email", "filename", "index"}:
         raise RuntimeError("name_source must be one of: email, filename, index")
 
     if not settings["sub2api_accounts_url"] and not settings["sub2api_base_url"] and not settings["skip_remote_dedupe"]:
         LOGGER.info("sub2api remote dedupe disabled: no sub2api URL configured")
         settings["skip_remote_dedupe"] = True
-    if not settings["skip_remote_dedupe"] and not settings["sub2api_token"]:
-        raise RuntimeError("sub2api_token is required unless --skip-remote-dedupe is enabled")
+    if not settings["skip_remote_dedupe"] and not settings["sub2api_x_api_key"]:
+        raise RuntimeError("sub2api_x_api_key is required unless --skip-remote-dedupe is enabled")
     return settings
 
 
